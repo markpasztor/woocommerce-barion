@@ -46,7 +46,13 @@ class WC_Gateway_Barion extends WC_Payment_Gateway {
         $this->order_button_text  = __( 'Proceed to Barion', 'pay-via-barion-for-woocommerce' );
         $this->supports           = array(
             'products',
-            'refunds'
+            'refunds',
+            'subscriptions',
+            'subscription_cancellation',
+            'subscription_reactivation',
+            'subscription_amount_changes',
+            'subscription_date_changes',
+            'multiple_subscriptions'
         );
         $this->supported_currencies = array('USD', 'EUR', 'HUF', 'CZK');
 
@@ -70,6 +76,7 @@ class WC_Gateway_Barion extends WC_Payment_Gateway {
         $this->barion_pixel_id = array_key_exists('barion_pixel_id', $this->settings) ? $this->settings['barion_pixel_id'] : '';
 
         add_action('woocommerce_update_options_payment_gateways_' . $this->id, array($this, 'process_admin_options'));
+        add_action('woocommerce_scheduled_subscription_payment_' . $this->id, array($this, 'process_scheduled_subscription_payment'), 10, 2 );
 
         if (!$this->is_selected_currency_supported()) {
             $this->enabled = 'no';
@@ -266,6 +273,27 @@ class WC_Gateway_Barion extends WC_Payment_Gateway {
     public function can_refund_order($order) {
         return $order && $order->get_transaction_id() && $this->get_barion_payment_id($order);
     }
+    
+    public function process_scheduled_subscription_payment( $amount_to_charge, $order ) {
+        if($order->get_total() <= 0) {
+            return $this->payment_complete($order);
+        }
+
+        $request = new WC_Gateway_Barion_Request($this->barion_client, $this, $this->profile_monitor);
+		$recurrenceId = get_post_meta($order->get_id(), WC_Gateway_Barion_Request::RECURRENCE_ID_META_KEY)[0];
+
+		if (!$recurrenceId) {
+		   return $order->update_status( 'failed', 'Sikertelen újra fizetés! Nincs recurrenceId azonosító!' ); 
+		}
+
+        $request->prepare_repayment($order, $recurrenceId);
+
+        if(!$request->is_prepared) {
+            return $order->update_status( 'failed', 'Sikertelen újra fizetés!' );
+        } else {
+            //return $this->payment_complete($order);
+        } 
+  	}
 
     const BARION_PAYMENT_ID_META_KEY = 'Barion paymentId';
     public function get_barion_payment_id($order) {

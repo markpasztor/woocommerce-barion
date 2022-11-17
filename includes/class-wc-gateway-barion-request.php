@@ -5,13 +5,15 @@ if (!defined('ABSPATH')) {
 }
 
 class WC_Gateway_Barion_Request {
+
+    const RECURRENCE_ID_META_KEY = 'Barion recurrenceId';
     /**
      * @var WC_Gateway_Barion_Profile_Monitor
      */
     private $profile_monitor;
 
     public $is_prepared;
-
+    
     public function __construct($barion_client, $gateway, $profile_monitor) {
         $this->is_prepared = false;
         $this->barion_client = $barion_client;
@@ -48,6 +50,19 @@ class WC_Gateway_Barion_Request {
         $paymentRequest->CallbackUrl = WC()->api_request_url('WC_Gateway_Barion');
         $paymentRequest->Currency = $order->get_currency();
         $paymentRequest->AddTransaction($transaction);
+        
+        if ( class_exists( 'WC_Subscriptions_Order') && WC_Subscriptions_Order::order_contains_subscription($order->get_id())) {
+            $recurrenceId = md5($order->get_id() . $order->get_billing_email());
+            
+            $subscriptions = wcs_get_subscriptions_for_order($order->get_id());
+            foreach( $subscriptions as $subscription_id => $subscription ) {
+                update_post_meta($subscription_id, self::RECURRENCE_ID_META_KEY, $recurrenceId);
+            }
+
+          $paymentRequest->RecurrenceType = "RecurringPayment";
+          $paymentRequest->RecurrenceId = $recurrenceId;
+          $paymentRequest->InitiateRecurrence = true;
+        }
 
         $this->set_payer_account_information($order, $paymentRequest);
         $this->set_purchase_information($order, $paymentRequest);
@@ -63,7 +78,57 @@ class WC_Gateway_Barion_Request {
             $this->gateway->set_barion_payment_id($order, $this->payment->PaymentId);
             $this->is_prepared = true;
         } else {
+            WC_Gateway_Barion::log('PreparePayment failed. PaymentRequest: ' . json_encode($paymentRequest));
             WC_Gateway_Barion::log('PreparePayment failed. Errors array: ' . json_encode($this->payment->Errors));
+        }
+    }
+    
+    
+    /**
+     * @param WC_Order $order
+     */
+    public function prepare_payment($order, $recurrenceId) {
+        $this->order = $order;
+        $transaction = new PaymentTransactionModel();
+        $transaction->POSTransactionId = $order->get_id();
+        $transaction->Payee = $this->gateway->payee;
+        $transaction->Total = $this->round($order->get_total(), $order->get_currency());
+        $transaction->Comment = "";
+
+        $this->prepare_items($order, $transaction);
+
+        $paymentRequest = new PreparePaymentRequestModel();
+        $paymentRequest->GuestCheckout = true;
+        $paymentRequest->PaymentType = PaymentType::Immediate;
+        $paymentRequest->FundingSources = array(FundingSourceType::All);
+        $paymentRequest->PaymentRequestId = $order->get_id();
+        $paymentRequest->PayerHint = $this->nullIfEmpty($order->get_billing_email());
+        $paymentRequest->PayerPhoneNumber = $this->clean_phone_number($order->get_billing_phone());
+        $paymentRequest->CardHolderNameHint = $this->nullIfEmpty($order->get_formatted_billing_full_name());
+        $paymentRequest->Locale = $this->get_barion_locale();
+        $paymentRequest->OrderNumber = $order->get_order_number();
+        $this->set_shipping_address($order, $paymentRequest);
+        $this->set_billing_address($order, $paymentRequest);
+        $paymentRequest->RedirectUrl = add_query_arg('order-id', $order->get_id(), WC()->api_request_url('WC_Gateway_Barion_Return_From_Payment'));
+        $paymentRequest->CallbackUrl = WC()->api_request_url('WC_Gateway_Barion');
+        $paymentRequest->Currency = $order->get_currency();
+        $paymentRequest->AddTransaction($transaction);
+        $paymentRequest->RecurrenceId = $recurrenceId;
+        $paymentRequest->RecurrenceType = "RecurringPayment";
+        $paymentRequest->InitiateRecurrence = false;
+
+        $this->set_payer_account_information($order, $paymentRequest);
+        $this->set_purchase_information($order, $paymentRequest);
+        $paymentRequest->ChallengePreference = ChallengePreference::NoPreference;
+
+        $this->payment = $this->barion_client->PreparePayment($paymentRequest);
+
+        if ($this->payment->RequestSuccessful) {
+            $this->gateway->set_barion_payment_id($order, $this->payment->PaymentId);
+            $this->is_prepared = true;
+        } else {
+            WC_Gateway_Barion::log('RecurringPaymentPrepare failed. PaymentRequest: ' . json_encode($paymentRequest));
+            WC_Gateway_Barion::log('RecurringPaymentPrepare failed. Errors array: ' . json_encode($this->payment->Errors));
         }
     }
 
@@ -72,8 +137,8 @@ class WC_Gateway_Barion_Request {
 
         foreach ($order->get_items(array('line_item', 'fee', 'shipping', 'coupon')) as $item_id => $item) {
             $itemModel = new ItemModel();
-            $itemModel->Name = $item['name'];
-            $itemModel->Description = $itemModel->Name;
+            $itemModel->Name = substr(__($item['name']), 0, 249);
+            $itemModel->Description = __($itemModel->Name);
             $itemModel->Unit = __('piece', 'pay-via-barion-for-woocommerce');
             $itemModel->Quantity = empty($item['qty']) ? 1 : $item['qty'];
 
