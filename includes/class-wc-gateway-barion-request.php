@@ -87,7 +87,7 @@ class WC_Gateway_Barion_Request {
     /**
      * @param WC_Order $order
      */
-    public function prepare_payment($order, $recurrenceId) {
+    public function prepare_repayment($order, $recurrenceId) {
         $this->order = $order;
         $transaction = new PaymentTransactionModel();
         $transaction->POSTransactionId = $order->get_id();
